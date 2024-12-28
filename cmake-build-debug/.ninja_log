@@ -1,0 +1,6 @@
+# ninja log v6
+9	1108	7570659589704277	CMakeFiles/chat_api_server.dir/ThreadPool.cpp.obj	4ef0e14644e16c18
+16	1231	7570662703596962	CMakeFiles/chat_api_server.dir/DatabaseManager.cpp.obj	c95bdf87bcee0898
+11	5293	7570659589724239	CMakeFiles/chat_api_server.dir/TcpServer.cpp.obj	3270fc37dd4daace
+6	5335	7570659589674367	CMakeFiles/chat_api_server.dir/main.cpp.obj	f0f087b305d6fe73
+14	8797	7570659589754146	CMakeFiles/chat_api_server.dir/RestServer.cpp.obj	64db965e998d5a78
