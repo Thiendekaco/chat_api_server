@@ -14,6 +14,14 @@ namespace http = beast::http;
 namespace net = boost::asio;
 using tcp = net::ip::tcp;
 
+/*
+    The RestServer class is responsible for handling RESTful API requests.
+    It listens for incoming HTTP requests and processes them accordingly.
+    The RestServer class uses the Boost.Beast library to handle HTTP requests and responses.
+*/
+
+// Hash the password using bcrypt
+// Return the hashed password
 std::string RestServer::hashPassword(const std::string& password) {
     try {
         char salt[BCRYPT_HASHSIZE];
@@ -38,7 +46,8 @@ std::string RestServer::hashPassword(const std::string& password) {
     }
 }
 
-
+// Check the password using bcrypt
+// Return true if the password is correct, false otherwise
 bool RestServer::checkPassword(const std::string& password, const std::string& hash) {
     try {
         int ret = bcrypt_checkpw(password.c_str(), hash.c_str());
@@ -54,29 +63,48 @@ bool RestServer::checkPassword(const std::string& password, const std::string& h
     }
 }
 
+/*
+Function of acceptor
+ Accepting Connections:
+   The acceptor listens on a specified address and port, and when a client tries to connect, the acceptor accepts the connection.
+ Socket Management:
+   When a connection is accepted, the acceptor creates a new socket to communicate with the client. This socket will be used to send and receive data.
+ Asynchronous operation:
+    Acceptors often support asynchronous operations, allowing the server to continue performing other tasks without being blocked while waiting for a connection.
+ */
+
 RestServer::RestServer(net::io_context& ioc, tcp::endpoint endpoint, ThreadPool& threadPool)
     : acceptor_(ioc), threadPool_(threadPool) {
 
+  	//The ec variable is used to save the error code during operations with the socket.
     beast::error_code ec;
 
+    // Open the acceptor
     acceptor_.open(endpoint.protocol(), ec);
     if (ec) {
+      	// If an error occurs, the fail function is called to print the error message.
         fail(ec, "open");
         return;
     }
 
+    // Set the option to reuse the address
     acceptor_.set_option(net::socket_base::reuse_address(true), ec);
     if (ec) {
+       // If an error occurs, the fail function is called to print the error message.
         fail(ec, "set_option");
         return;
     }
 
+    // Bind to the server address
+    // Allows the server to listen for connections to the specified address and port.
     acceptor_.bind(endpoint, ec);
     if (ec) {
+      	// If an error occurs, the fail function is called to print the error message.
         fail(ec, "bind");
         return;
     }
 
+    // Start listening for incoming connections with the maximum number of connections specified.
     acceptor_.listen(net::socket_base::max_listen_connections, ec);
     if (ec) {
         fail(ec, "listen");
@@ -86,11 +114,15 @@ RestServer::RestServer(net::io_context& ioc, tcp::endpoint endpoint, ThreadPool&
 }
 
 void RestServer::doAccept() {
+    // 'async_accept' is used to accept a new connection from a client.
+    // When a client tries to connect to the server,
+    // async_accept will accept the connection and provide a socket to communicate with the client.
     auto socket = std::make_shared<tcp::socket>(acceptor_.get_executor());
     acceptor_.async_accept(
         *socket,
         [this, socket](boost::system::error_code ec) {  // Capture socket ?úng cách
             if (!ec) {
+              // Enqueue the task to handle the client connection if there is no error
                 threadPool_.enqueueTask([this, socket = std::move(socket)]() mutable {
                     handleRequest(socket);
                     });
@@ -98,6 +130,7 @@ void RestServer::doAccept() {
             else {
                 std::cerr << "Failed to accept connection: " << ec.message() << std::endl;
             }
+            // Continue to accept new connections
             doAccept();
         });
 }
@@ -105,14 +138,17 @@ void RestServer::doAccept() {
 
 void RestServer::handleRequest(std::shared_ptr<tcp::socket> socket) {
     try {
+        // This buffer helps to manage the size and calculate memory efficiently.
         beast::flat_buffer buffer;
         http::request<http::string_body> req;
+        // Read a request from the client
         http::read(*socket, buffer, req);
 
         http::response<http::string_body> res{ http::status::ok, req.version() };
         res.set(http::field::server, "Beast");
         res.set(http::field::content_type, "application/json");
 
+        // Handle different API requests based on the request method and target
         if (req.method() == http::verb::post && req.target() == "/api/login") {
             // Handle login
             json response = handleLogin(req);
@@ -154,6 +190,8 @@ void RestServer::handleRequest(std::shared_ptr<tcp::socket> socket) {
             res.body() = "Not Found";
         }
 
+        // Prepare the response payload
+        // Write the response to the client
         res.prepare_payload();
         http::write(*socket, res);
     }
@@ -205,7 +243,6 @@ json RestServer::handleLogin(const http::request<http::string_body>& req) {
     }
     return response;
 }
-
 
 std::string RestServer::generateToken(const std::string& email) {
     auto token = jwt::create()

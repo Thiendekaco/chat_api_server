@@ -15,6 +15,13 @@ namespace net = boost::asio;
 using tcp = net::ip::tcp;
 using json = nlohmann::json;
 
+/*
+    The RestServer class is responsible for handling RESTful API requests.
+    It listens for incoming HTTP requests and processes them accordingly.
+    The RestServer class uses the Boost.Beast library to handle HTTP requests and responses.
+*/
+
+
 class RestServer {
 public:
     RestServer(net::io_context& ioc, tcp::endpoint endpoint, ThreadPool& threadPool);

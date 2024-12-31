@@ -1,61 +1,78 @@
+#include "DatabaseManager.h"
 #include <iostream>
 #include <stdexcept>
-#include "DatabaseManager.h"
+#include <mutex>
 
+/*
+    The DatabaseManager class is a singleton class that provides an interface to interact with the database.
+    It manages the connection pool and provides methods to execute queries, fetch data, and perform CRUD operations.
+    The DatabaseManager should be a singleton class to maintain a single connectionPool throughout the application's lifecycle.
+*/
 
-std::mutex DatabaseManager::mutex_;
-DatabaseManager* DatabaseManager::instance_ = nullptr;
+std::unique_ptr<DatabaseManager> DatabaseManager::instance_ = nullptr;
+std::once_flag DatabaseManager::initInstanceFlag;
 
+// Get the singleton instance of DatabaseManager
 DatabaseManager& DatabaseManager::getInstance() {
-    std::lock_guard<std::mutex> lock(mutex_);
-    if (instance_ == nullptr) {
-        instance_ = new DatabaseManager("host=localhost port=5432 dbname=chat_message_db user=postgres password =root");
-    }
+  // Use std::call_once to ensure that the instance is created only once
+  // This is thread-safe and guarantees that the instance is created in a multi-threaded environment
+    std::call_once(initInstanceFlag, []() {
+        instance_ = std::unique_ptr<DatabaseManager>(new DatabaseManager());
+    });
     return *instance_;
 }
 
-DatabaseManager::DatabaseManager(const std::string& conninfo) {
-    if (!openDatabase(conninfo)) {
-        std::cerr << "Failed to open database: " << conninfo << std::endl;
-        throw std::runtime_error("Failed to open database");
-    }
+// Constructor to initialize the connection pool
+// The connection pool is created with the connection information and pool size
+DatabaseManager::DatabaseManager()
+    : connectionPool_(std::make_unique<ConnectionPool>(
+        "host=localhost port=5432 dbname=chat_message_db user=postgres password=root",
+        150
+    )) {
 }
 
-DatabaseManager::~DatabaseManager() {
-    closeDatabase();
+DatabaseManager::~DatabaseManager() {}
+
+// Get a connection from the connection pool
+std::shared_ptr<pqxx::connection> DatabaseManager::getConnection() {
+    return connectionPool_->getConnection();
 }
 
-bool DatabaseManager::openDatabase(const std::string& conninfo) {
-    try {
-        conn = new pqxx::connection(conninfo);
-    } catch (const std::exception& e) {
-        handleError(e.what());
-        return false;
-    }
-    return true;
+
+// Release the connection back to the connection pool
+// This allows other threads to use the connection
+void DatabaseManager::releaseConnection(std::shared_ptr<pqxx::connection> conn) {
+    connectionPool_->releaseConnection(conn);
 }
 
-void DatabaseManager::closeDatabase() {
-    if (conn) {
-        conn->close();
-        delete conn;
-        conn = nullptr;
-    }
-}
-
+// Excuting the query
 bool DatabaseManager::executeQuery(const std::string& query) {
+     // Get a connection from the connection pool
+     // The connection is automatically released back to the pool when the function exits
+    auto conn = getConnection();
     try {
+        // Start a transaction
+        // The transaction is automatically committed when the function exits
         pqxx::work txn(*conn);
         txn.exec(query);
         txn.commit();
-    } catch (const std::exception& e) {
+
+        // When the transaction is committed, the connection is released back to the pool
+        releaseConnection(conn);
+        return true;
+    }
+    catch (const std::exception& e) {
         handleError(e.what());
+        // If an error occurs, the connection is released back to the pool
+        releaseConnection(conn);
         return false;
     }
-    return true;
 }
 
 std::vector<std::vector<std::string>> DatabaseManager::fetchQuery(const std::string& query) {
+    // Get a connection from the connection pool
+    // The connection is automatically released back to the pool when the function exits
+    auto conn = getConnection();
     std::vector<std::vector<std::string>> results;
     try {
         pqxx::work txn(*conn);
@@ -67,8 +84,11 @@ std::vector<std::vector<std::string>> DatabaseManager::fetchQuery(const std::str
             }
             results.push_back(resultRow);
         }
-    } catch (const std::exception& e) {
+        releaseConnection(conn);
+    }
+    catch (const std::exception& e) {
         handleError(e.what());
+        releaseConnection(conn);
     }
     return results;
 }
@@ -109,43 +129,58 @@ bool DatabaseManager::updateData(const std::string& table, const std::vector<std
     return executeQuery(query);
 }
 
+/*
+    The query methods below will be built according to the basic flow as follows:
+      1. Get a connection from the connection pool
+      2. Execute the query
+      3. Release the connection back to the pool
+      4. If an exception occurs, handle the error and release the connection back to the pool
+      5. Return the result of the query
+*/
+
 bool DatabaseManager::emailExists(const std::string& email) {
+    auto conn = getConnection();
     try {
         pqxx::work txn(*conn);
         pqxx::result result = txn.exec("SELECT 1 FROM users WHERE email = " + txn.quote(email));
+        releaseConnection(conn);
         return !result.empty();
     }
     catch (const std::exception& e) {
         handleError(e.what());
+        releaseConnection(conn);
         return false;
     }
 }
 
 bool DatabaseManager::registerUser(const std::string& email, const std::string& passwordHash) {
+    auto conn = getConnection();
     try {
         pqxx::work txn(*conn);
-        // Insert into users table
         pqxx::result result = txn.exec("INSERT INTO users (email, username) VALUES (" + txn.quote(email) + ", " + txn.quote(email) + ") RETURNING user_id");
         if (result.empty()) {
+            releaseConnection(conn);
             return false;
         }
         int userId = result[0][0].as<int>();
-
-        // Insert into authentication table
-        txn.exec("INSERT INTO authentication (user_id, password) VALUES (" + txn.quote(userId) + ", " + txn.quote(passwordHash) + ")");
+        txn.exec("INSERT INTO authentication (user_id, password_hash) VALUES (" + txn.quote(userId) + ", " + txn.quote(passwordHash) + ")");
         txn.commit();
+        releaseConnection(conn);
         return true;
     }
     catch (const std::exception& e) {
         handleError(e.what());
+        releaseConnection(conn);
         return false;
     }
 }
 
 std::string DatabaseManager::getPasswordHash(const std::string& email) {
+    auto conn = getConnection();
     try {
         pqxx::work txn(*conn);
         pqxx::result result = txn.exec("SELECT password_hash FROM authentication WHERE user_id = (SELECT user_id FROM users WHERE email = " + txn.quote(email) + ")");
+        releaseConnection(conn);
         if (result.empty()) {
             return "";
         }
@@ -153,39 +188,102 @@ std::string DatabaseManager::getPasswordHash(const std::string& email) {
     }
     catch (const std::exception& e) {
         handleError(e.what());
+        releaseConnection(conn);
         return "";
     }
 }
 
 bool DatabaseManager::invalidateToken(const std::string& token) {
+    auto conn = getConnection();
     try {
         pqxx::work txn(*conn);
         txn.exec("INSERT INTO token_blacklist (token) VALUES (" + txn.quote(token) + ")");
         txn.commit();
+        releaseConnection(conn);
         return true;
     }
     catch (const std::exception& e) {
         handleError(e.what());
+        releaseConnection(conn);
         return false;
     }
 }
 
+bool DatabaseManager::updateUserStatus(const std::string& email, const std::string& status) {
+    auto conn = getConnection();
+    try {
+        pqxx::work txn(*conn);
+        txn.exec("UPDATE users SET status = " + txn.quote(status) + " WHERE email = " + txn.quote(email));
+        txn.commit();
+        releaseConnection(conn);
+        return true;
+    }
+    catch (const std::exception& e) {
+        handleError(e.what());
+        releaseConnection(conn);
+        return false;
+    }
+}
+
+std::vector<std::vector<std::string>> DatabaseManager::getUsers() {
+    auto conn = getConnection();
+    std::vector<std::vector<std::string>> users;
+    try {
+        pqxx::work txn(*conn);
+        pqxx::result result = txn.exec("SELECT username, email, profile_picture, status, created_at FROM users");
+        for (const auto& row : result) {
+            std::vector<std::string> user;
+            user.push_back(row["username"].c_str());
+            user.push_back(row["email"].c_str());
+            user.push_back(row["profile_picture"].c_str());
+            user.push_back(row["status"].c_str());
+            user.push_back(row["created_at"].c_str());
+            users.push_back(user);
+        }
+        releaseConnection(conn);
+    }
+    catch (const std::exception& e) {
+        handleError(e.what());
+        releaseConnection(conn);
+    }
+    return users;
+}
+
+bool DatabaseManager::saveMessage(int roomId, int senderId, const std::string& content) {
+    auto conn = getConnection();
+    try {
+        pqxx::work txn(*conn);
+        txn.exec("INSERT INTO messages (room_id, sender_id, content) VALUES (" + txn.quote(roomId) + ", " + txn.quote(senderId) + ", " + txn.quote(content) + ")");
+        txn.commit();
+        releaseConnection(conn);
+        return true;
+    }
+    catch (const std::exception& e) {
+        handleError(e.what());
+        releaseConnection(conn);
+        return false;
+    }
+}
+
+bool DatabaseManager::updateMessageStatus(int messageId, int userId, const std::string& status) {
+    auto conn = getConnection();
+    try {
+        pqxx::work txn(*conn);
+        txn.exec("INSERT INTO message_status (message_id, user_id, status) VALUES (" + txn.quote(messageId) + ", " + txn.quote(userId) + ", " + txn.quote(status) + ") ON CONFLICT (message_id, user_id) DO UPDATE SET status = " + txn.quote(status) + ", updated_at = CURRENT_TIMESTAMP");
+        txn.commit();
+        releaseConnection(conn);
+        return true;
+    }
+    catch (const std::exception& e) {
+        handleError(e.what());
+        releaseConnection(conn);
+        return false;
+    }
+}
 
 void DatabaseManager::handleError(const std::string& errorMessage) {
     std::cerr << "Database error: " << errorMessage << std::endl;
     throw std::runtime_error("Database error: " + errorMessage);
 }
 
-bool DatabaseManager::updateUserStatus(const std::string& email, const std::string& status) {
-    try {
-        pqxx::work txn(*conn);
-        txn.exec("UPDATE users SET status = " + txn.quote(status) + " WHERE email = " + txn.quote(email));
-        txn.commit();
-        return true;
-    }
-    catch (const std::exception& e) {
-        handleError(e.what());
-        return false;
-    }
-}
 

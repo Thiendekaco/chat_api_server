@@ -1,12 +1,17 @@
 #pragma once
-#pragma once
 #include <string>
-#include <pqxx/pqxx>
 #include <vector>
-#include <mutex>
+#include <memory>
+#include "ConnectionPool.h"
 
 #ifndef DATABASEMANAGER_H
 #define DATABASEMANAGER_H
+
+/*
+    The DatabaseManager class is a singleton class that provides an interface to interact with the database.
+    It manages the connection pool and provides methods to execute queries, fetch data, and perform CRUD operations.
+    The DatabaseManager should be a singleton class to maintain a single connectionPool throughout the application's lifecycle.
+*/
 
 class DatabaseManager {
 public:
@@ -26,20 +31,19 @@ public:
     bool saveMessage(int roomId, int senderId, const std::string& content);
     bool updateMessageStatus(int messageId, int userId, const std::string& status);
 
-
 private:
-    DatabaseManager(const std::string& conninfo);
+    DatabaseManager();
     ~DatabaseManager();
     DatabaseManager(const DatabaseManager&) = delete;
     DatabaseManager& operator=(const DatabaseManager&) = delete;
 
-    pqxx::connection* conn;
-    bool openDatabase(const std::string& conninfo);
-    void closeDatabase();
+    std::shared_ptr<pqxx::connection> getConnection();
+    void releaseConnection(std::shared_ptr<pqxx::connection> conn);
     void handleError(const std::string& errorMessage);
 
-    static std::mutex mutex_;
-    static DatabaseManager* instance_;
+    std::unique_ptr<ConnectionPool> connectionPool_;
+    static std::unique_ptr<DatabaseManager> instance_;
+    static std::once_flag initInstanceFlag;
 };
 
 #endif //DATABASEMANAGER_H

@@ -8,7 +8,11 @@
 #ifndef THREADPOOL_H
 #define THREADPOOL_H
 
-
+/*
+    The ThreadPool class is responsible for managing a pool of worker threads.
+    It allows tasks to be enqueued and executed by the worker threads.
+    The ThreadPool class uses the std::thread, std::mutex, and std::condition_variable classes to manage the worker threads.
+*/
 
 class ThreadPool {
 public:

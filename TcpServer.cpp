@@ -5,20 +5,36 @@
 
 using boost::asio::ip::tcp;
 
+
+/*
+    The TcpServer class is responsible for handling TCP/IP connections.
+    It listens for incoming connections and processes the messages received from the clients.
+    The TcpServer class uses the Boost.Asio library to handle TCP/IP connections.
+*/
+
+
+// Constructor to initialize the acceptor and socket
 TcpServer::TcpServer(boost::asio::io_context& io_context, short port, ThreadPool& threadPool)
     : acceptor_(io_context, tcp::endpoint(tcp::v4(), port)), threadPool_(threadPool) {
+   	// Create a new socket
     socket_ = std::make_shared<tcp::socket>(io_context);
+    // Start accepting incoming connections
     doAccept();
 }
 
 void TcpServer::doAccept() {
+    // 'async_accept' is used to accept a new connection from a client.
+    // When a client tries to connect to the server,
+    // async_accept will accept the connection and provide a socket to communicate with the client.
     acceptor_.async_accept(*socket_,
         [this](boost::system::error_code ec) {
             if (!ec) {
+                // Enqueue the task to handle the client connection if there is no error
                 threadPool_.enqueueTask([this]() mutable {
                     handleClient();
-                    });
+                });
             }
+            // Continue to accept new connections
             doAccept();
         });
 }
@@ -26,6 +42,7 @@ void TcpServer::doAccept() {
 void TcpServer::handleClient(std::shared_ptr<tcp::socket> socket) {
     try {
         for (;;) {
+         	 // Read data from the socket
             char data[1024];
             boost::system::error_code error;
             size_t length = socket->read_some(boost::asio::buffer(data), error);
@@ -138,6 +155,10 @@ void TcpServer::handleMessageReceipt(const json& message, std::shared_ptr<tcp::s
     std::cout << "Message receipt from " << message["username"] << " for message ID: " << message["messageId"] << "\n";
 }
 
+// Check if the token is valid
+// After authentication using the RESTful API methods,
+// each time the client sends a request to the socket,
+// it needs to check the token to ensure that the client has been authenticated.
 bool TcpServer::isTokenValid(const std::string& token) {
     try {
         auto decoded = jwt::decode(token);

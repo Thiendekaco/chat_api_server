@@ -8,6 +8,13 @@
 
 using boost::asio::ip::tcp;
 
+/*
+    The TcpServer class is responsible for handling TCP/IP connections.
+    It listens for incoming connections and processes the messages received from the clients.
+    The TcpServer class uses the Boost.Asio library to handle TCP/IP connections.
+*/
+
+
 class TcpServer {
 public:
     TcpServer(boost::asio::io_context& io_context, short port, ThreadPool& threadPool);
