@@ -157,7 +157,7 @@ bool DatabaseManager::registerUser(const std::string& email, const std::string& 
     auto conn = getConnection();
     try {
         pqxx::work txn(*conn);
-        pqxx::result result = txn.exec("INSERT INTO users (email, username) VALUES (" + txn.quote(email) + ", " + txn.quote(email) + ") RETURNING user_id");
+        pqxx::result result = txn.exec("INSERT INTO users (email, user_name) VALUES (" + txn.quote(email) + ", " + txn.quote(email) + ") RETURNING user_id");
         if (result.empty()) {
             releaseConnection(conn);
             return false;
@@ -230,10 +230,10 @@ std::vector<std::vector<std::string>> DatabaseManager::getUsers() {
     std::vector<std::vector<std::string>> users;
     try {
         pqxx::work txn(*conn);
-        pqxx::result result = txn.exec("SELECT username, email, profile_picture, status, created_at FROM users");
+        pqxx::result result = txn.exec("SELECT user_name, email, profile_picture, status, created_at FROM users");
         for (const auto& row : result) {
             std::vector<std::string> user;
-            user.push_back(row["username"].c_str());
+            user.push_back(row["user_name"].c_str());
             user.push_back(row["email"].c_str());
             user.push_back(row["profile_picture"].c_str());
             user.push_back(row["status"].c_str());
@@ -263,6 +263,24 @@ bool DatabaseManager::saveMessage(int roomId, int senderId, const std::string& c
         releaseConnection(conn);
         return false;
     }
+
+	updateLastMessageAt(roomId);
+}
+
+bool DatabaseManager::updateLastMessageAt(int roomId) {
+	auto conn = getConnection();
+	try {
+		pqxx::work txn(*conn);
+		txn.exec("UPDATE rooms SET last_message_at = CURRENT_TIMESTAMP WHERE room_id = " + txn.quote(roomId));
+		txn.commit();
+		releaseConnection(conn);
+		return true;
+	}
+	catch (const std::exception& e) {
+		handleError(e.what());
+		releaseConnection(conn);
+		return false;
+	}
 }
 
 bool DatabaseManager::updateMessageStatus(int messageId, int userId, const std::string& status) {
@@ -281,9 +299,314 @@ bool DatabaseManager::updateMessageStatus(int messageId, int userId, const std::
     }
 }
 
+std::vector<std::string> DatabaseManager::getRoomById(int roomId) {
+    auto conn = getConnection();
+    std::vector<std::string> room;
+    try {
+        pqxx::work txn(*conn);
+        pqxx::result result = txn.exec(
+            "SELECT r.last_message_at r.created_at, ru.user_id_1, ru.user_id_2 "
+            "FROM rooms r "
+            "JOIN relation_user ru ON r.room_id = ru.room_id "
+            "WHERE r.room_id = " + txn.quote(roomId)
+        );
+        if (result.empty()) {
+            releaseConnection(conn);
+            return room;
+        }
+		room.push_back(result[0]["room_id"].c_str());
+        room.push_back(result[0]["user_id_1"].c_str());
+        room.push_back(result[0]["user_id_2"].c_str());
+        room.push_back(result[0]["last_message_at"].c_str());
+        room.push_back(result[0]["created_at"].c_str());
+
+        releaseConnection(conn);
+    }
+    catch (const std::exception& e) {
+        handleError(e.what());
+        releaseConnection(conn);
+    }
+    return room;
+}
+
+
+std::vector<std::string> DatabaseManager::getRoomByUserIds(int userId1, int userId2) {
+	auto conn = getConnection();
+	std::vector<std::string> room;
+	try {
+		pqxx::work txn(*conn);
+		pqxx::result result = txn.exec(
+			"SELECT r.room_id, r.last_message_at, r.created_at, ru.user_id_1, ru.user_id_2 "
+			"FROM rooms r "
+			"JOIN relation_user ru ON r.room_id = ru.room_id "
+			"WHERE (ru.user_id_1 = " + txn.quote(userId1) + " AND ru.user_id_2 = " + txn.quote(userId2) + ") "
+			"OR (ru.user_id_1 = " + txn.quote(userId2) + " AND ru.user_id_2 = " + txn.quote(userId1) + ")"
+		);
+		if (result.empty()) {
+			releaseConnection(conn);
+			return room;
+		}
+		room.push_back(result[0]["room_id"].c_str());
+		room.push_back(result[0]["user_id_1"].c_str());
+		room.push_back(result[0]["user_id_2"].c_str());
+		room.push_back(result[0]["last_message_at"].c_str());
+		room.push_back(result[0]["created_at"].c_str());
+		releaseConnection(conn);
+	}
+	catch (const std::exception& e) {
+		handleError(e.what());
+		releaseConnection(conn);
+	}
+	return room;
+}
+
+
+std::vector<std::vector<std::string>> DatabaseManager::getRoomsByUserId(int userId) {
+    auto conn = getConnection();
+    std::vector<std::vector<std::string>> rooms;
+    try {
+        pqxx::work txn(*conn);
+        pqxx::result result = txn.exec(
+            "SELECT r.room_id, r.last_message_at, r.created_at, ru.user_id_1, ru.user_id_2 "
+            "FROM rooms r "
+            "JOIN relation_user ru ON r.room_id = ru.room_id "
+            "WHERE ru.user_id_1 = " + txn.quote(userId) + " OR ru.user_id_2 = " + txn.quote(userId)
+        );
+        for (const auto& row : result) {
+            std::vector<std::string> room;
+            room.push_back(row["room_id"].c_str());
+			room.push_back(row["user_id_1"].c_str());
+			room.push_back(row["user_id_2"].c_str());
+            room.push_back(row["last_message_at"].c_str());
+            room.push_back(row["created_at"].c_str());
+            rooms.push_back(room);
+        }
+        releaseConnection(conn);
+    }
+    catch (const std::exception& e) {
+        handleError(e.what());
+        releaseConnection(conn);
+    }
+    return rooms;
+};
+
+std::vector<std::vector<std::string>> DatabaseManager::getMessages(int roomId) {
+	auto conn = getConnection();
+	std::vector<std::vector<std::string>> messages;
+	try {
+		pqxx::work txn(*conn);
+		pqxx::result result = txn.exec("SELECT message_id, sender_id, content, is_read, created_at FROM messages WHERE room_id = " + txn.quote(roomId));
+		for (const auto& row : result) {
+			std::vector<std::string> message;
+			message.push_back(row["message_id"].c_str());
+			message.push_back(row["sender_id"].c_str());
+			message.push_back(row["content"].c_str());
+			message.push_back(row["is_read"].c_str());
+			message.push_back(row["created_at"].c_str());
+			messages.push_back(message);
+		}
+		releaseConnection(conn);
+	}
+	catch (const std::exception& e) {
+		handleError(e.what());
+		releaseConnection(conn);
+	}
+
+};
+
+std::vector<std::string> DatabaseManager::getUserById(int userId) {
+	auto conn = getConnection();
+	std::vector<std::string> user;
+	try {
+		pqxx::work txn(*conn);
+		pqxx::result result = txn.exec("SELECT user_name, email, profile_picture, status, created_at FROM users WHERE user_id = " + txn.quote(userId));
+		if (result.empty()) {
+			releaseConnection(conn);
+			return user;
+		}
+		user.push_back(userId + "");
+		user.push_back(result[0]["user_name"].c_str());
+		user.push_back(result[0]["email"].c_str());
+		user.push_back(result[0]["profile_picture"].c_str());
+		user.push_back(result[0]["status"].c_str());
+		user.push_back(result[0]["created_at"].c_str());
+		releaseConnection(conn);
+	}
+	catch (const std::exception& e) {
+		handleError(e.what());
+		releaseConnection(conn);
+	}
+};
+
+
+std::vector<std::string> DatabaseManager::getUserByEmail(std::string& email) {
+	auto conn = getConnection();
+	std::vector<std::string> user;
+	try {
+		pqxx::work txn(*conn);
+		pqxx::result result = txn.exec("SELECT user_name, email, profile_picture, status, created_at FROM users WHERE email = " + txn.quote(email));
+		if (result.empty()) {
+			releaseConnection(conn);
+			return user;
+		}
+
+		user.push_back(result[0]["user_id"].c_str());
+		user.push_back(result[0]["user_name"].c_str());
+		user.push_back(result[0]["email"].c_str());
+		user.push_back(result[0]["profile_picture"].c_str());
+		user.push_back(result[0]["status"].c_str());
+		user.push_back(result[0]["created_at"].c_str());
+		releaseConnection(conn);
+	}
+	catch (const std::exception& e) {
+		handleError(e.what());
+		releaseConnection(conn);
+	}
+
+};
+
+std::vector<std::string> DatabaseManager::updateFriendRequest(const int userId, const int friendId) {
+    auto conn = getConnection();
+    std::vector<std::string> relation;
+    try {
+        pqxx::work txn(*conn);
+        pqxx::result result = txn.exec(
+            "SELECT * FROM relation_user "
+            "WHERE (user_id_1 = " + txn.quote(userId) + " AND user_id_2 = " + txn.quote(friendId) + ") "
+            "OR (user_id_1 = " + txn.quote(friendId) + " AND user_id_2 = " + txn.quote(userId) + ")"
+        );
+
+        if (result.empty()) {
+            txn.exec(
+                "INSERT INTO relation_user (user_id_1, user_id_2, is_accepted) VALUES ("
+                + txn.quote(userId) + ", " + txn.quote(friendId) + ", true)"
+            );
+        }
+        else {
+            txn.exec(
+                "UPDATE relation_user SET is_accepted = true "
+                "WHERE (user_id_1 = " + txn.quote(userId) + " AND user_id_2 = " + txn.quote(friendId) + ") "
+                "OR (user_id_1 = " + txn.quote(friendId) + " AND user_id_2 = " + txn.quote(userId) + ")"
+            );
+        }
+
+        txn.commit();
+
+        // Fetch the updated or newly created relation
+        result = txn.exec(
+            "SELECT * FROM relation_user "
+            "WHERE (user_id_1 = " + txn.quote(userId) + " AND user_id_2 = " + txn.quote(friendId) + ") "
+            "OR (user_id_1 = " + txn.quote(friendId) + " AND user_id_2 = " + txn.quote(userId) + ")"
+        );
+
+        if (!result.empty()) {
+            relation.push_back(result[0]["user_id_1"].c_str());
+            relation.push_back(result[0]["user_id_2"].c_str());
+            relation.push_back(result[0]["is_accepted"].c_str());
+        }
+
+        releaseConnection(conn);
+    }
+    catch (const std::exception& e) {
+        handleError(e.what());
+        releaseConnection(conn);
+    }
+    return relation;
+}
+
+std::vector<std::vector<std::string>> DatabaseManager::getFriendRequests(const int userId) {
+	auto conn = getConnection();
+	std::vector<std::vector<std::string>> friendRequests;
+	try {
+		pqxx::work txn(*conn);
+		pqxx::result result = txn.exec(
+			"SELECT u.user_name, u.email, u.profile_picture, u.status, u.created_at "
+			"FROM users u "
+			"JOIN relation_user ru ON u.user_id = ru.user_id_1 "
+			"WHERE ru.user_id_2 = " + txn.quote(userId) + " AND ru.is_accepted = false"
+		);
+		for (const auto& row : result) {
+			std::vector<std::string> friendRequest;
+            friendRequest.push_back(row["user_id"].c_str());
+			friendRequest.push_back(row["user_name"].c_str());
+			friendRequest.push_back(row["email"].c_str());
+			friendRequest.push_back(row["profile_picture"].c_str());
+			friendRequest.push_back(row["status"].c_str());
+			friendRequest.push_back(row["created_at"].c_str());
+			friendRequests.push_back(friendRequest);
+		}
+		releaseConnection(conn);
+	}
+	catch (const std::exception& e) {
+		handleError(e.what());
+		releaseConnection(conn);
+	}
+	return friendRequests;
+}
+
+
+std::vector<std::vector<std::string>> DatabaseManager::getFriends(const int userId) {
+	auto conn = getConnection();
+	std::vector<std::vector<std::string>> friends;
+	try {
+		pqxx::work txn(*conn);
+		pqxx::result result = txn.exec(
+			"SELECT u.user_name, u.email, u.profile_picture, u.status, u.created_at "
+			"FROM users u "
+			"JOIN relation_user ru ON u.user_id = ru.user_id_1 "
+			"WHERE ru.user_id_2 = " + txn.quote(userId) + " AND ru.is_accepted = true"
+		);
+		for (const auto& row : result) {
+			std::vector<std::string> friend_;
+			friend_.push_back(row["user_id"].c_str());
+            friend_.push_back(row["user_name"].c_str());
+            friend_.push_back(row["email"].c_str());
+            friend_.push_back(row["profile_picture"].c_str());
+            friend_.push_back(row["status"].c_str());
+            friend_.push_back(row["created_at"].c_str());
+			friends.push_back(friend_);
+		}
+		releaseConnection(conn);
+	}
+	catch (const std::exception& e) {
+		handleError(e.what());
+		releaseConnection(conn);
+	}
+	return friends;
+}
+
+std::vector<std::vector<std::string>> DatabaseManager::getFriendRequestPending(const int userId) {
+	auto conn = getConnection();
+	std::vector<std::vector<std::string>> friendRequests;
+	try {
+		pqxx::work txn(*conn);
+		pqxx::result result = txn.exec(
+			"SELECT u.user_name, u.email, u.profile_picture, u.status, u.created_at "
+			"FROM users u "
+			"JOIN relation_user ru ON u.user_id = ru.user_id_2 "
+			"WHERE ru.user_id_1 = " + txn.quote(userId) + " AND ru.is_accepted = false"
+		);
+		for (const auto& row : result) {
+			std::vector<std::string> friendRequest;
+			friendRequest.push_back(row["user_id"].c_str());
+			friendRequest.push_back(row["user_name"].c_str());
+			friendRequest.push_back(row["email"].c_str());
+			friendRequest.push_back(row["profile_picture"].c_str());
+			friendRequest.push_back(row["status"].c_str());
+			friendRequest.push_back(row["created_at"].c_str());
+			friendRequests.push_back(friendRequest);
+		}
+		releaseConnection(conn);
+	}
+	catch (const std::exception& e) {
+		handleError(e.what());
+		releaseConnection(conn);
+	}
+	return friendRequests;
+}
+
 void DatabaseManager::handleError(const std::string& errorMessage) {
     std::cerr << "Database error: " << errorMessage << std::endl;
     throw std::runtime_error("Database error: " + errorMessage);
 }
-
 

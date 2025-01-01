@@ -1,12 +1,12 @@
 #include "RestServer.h"
 #include "DatabaseManager.h"
+#include "Utils.h"
 #include <boost/beast/core.hpp>
 #include <boost/beast/http.hpp>
 #include <boost/asio.hpp>
 #include <iostream>
 #include <memory>
 #include <string>
-#include "include/bcrypt/bcrypt.h"
 #include <jwt-cpp/jwt.h>
 
 namespace beast = boost::beast;
@@ -20,48 +20,6 @@ using tcp = net::ip::tcp;
     The RestServer class uses the Boost.Beast library to handle HTTP requests and responses.
 */
 
-// Hash the password using bcrypt
-// Return the hashed password
-std::string RestServer::hashPassword(const std::string& password) {
-    try {
-        char salt[BCRYPT_HASHSIZE];
-        char hash[BCRYPT_HASHSIZE];
-        // Generate a salt and hash the password
-        int ret = bcrypt_gensalt(12, salt);
-
-        if (ret != 0) {
-            throw std::runtime_error("Failed to generate salt");
-        }
-
-        int ret_ = bcrypt_hashpw(password.c_str(), salt, hash);
-
-        if (ret_ != 0) {
-            throw std::runtime_error("Failed to hash password");
-        }
-
-        return hash;
-    }
-    catch (const std::exception& e) {
-        throw std::runtime_error("Failed to hash password: " + std::string(e.what()));
-    }
-}
-
-// Check the password using bcrypt
-// Return true if the password is correct, false otherwise
-bool RestServer::checkPassword(const std::string& password, const std::string& hash) {
-    try {
-        int ret = bcrypt_checkpw(password.c_str(), hash.c_str());
-        if (ret >= 0) {
-            return ret == 0;
-        }
-
-        throw std::runtime_error("Failed to check password");
-
-    }
-    catch (const std::exception& e) {
-        throw std::runtime_error("Failed to check password: " + std::string(e.what()));
-    }
-}
 
 /*
 Function of acceptor
@@ -164,6 +122,16 @@ void RestServer::handleRequest(std::shared_ptr<tcp::socket> socket) {
             json response = handleLogout(req);
             res.body() = response.dump();
         }
+        else if (req.method() == http::verb::post && req.target() == "/api/invite") {
+            // Handle invite friend
+            json response = handleInviteFriend(req);
+            res.body() = response.dump();
+        }
+        else if (req.method() == http::verb::post && req.target() == "/api/accept-invite") {
+            // Handle invite friend
+            json response = handleInviteFriend(req);
+            res.body() = response.dump();
+        }
         else if (req.method() == http::verb::get && req.target() == "/api/users") {
             // Handle get users
             json response = handleGetUsers(req);
@@ -172,11 +140,6 @@ void RestServer::handleRequest(std::shared_ptr<tcp::socket> socket) {
         else if (req.method() == http::verb::get && req.target() == "/api/rooms") {
             // Handle get rooms
             json response = handleGetRooms(req);
-            res.body() = response.dump();
-        }
-        else if (req.method() == http::verb::get && req.target() == "/api/invite") {
-            // Handle get rooms
-            json response = handleInviteFriend(req);
             res.body() = response.dump();
         }
         else if (req.method() == http::verb::get && req.target().starts_with("/api/messages/")) {
@@ -197,6 +160,23 @@ void RestServer::handleRequest(std::shared_ptr<tcp::socket> socket) {
     }
     catch (std::exception& e) {
         std::cerr << "Exception in thread: " << e.what() << "\n";
+    }
+}
+
+bool RestServer::isTokenValid(const std::string& token, std::string& email) {
+    try {
+        auto decoded = jwt::decode(token);
+        auto verifier = jwt::verify()
+            .allow_algorithm(jwt::algorithm::hs256{ "secret" })
+            .with_issuer("auth0");
+
+        verifier.verify(decoded);
+        email = decoded.get_payload_claim("email").as_string();
+        return true;
+    }
+    catch (const std::exception& e) {
+        std::cerr << "Token validation failed: " << e.what() << "\n";
+        return false;
     }
 }
 
@@ -221,9 +201,9 @@ json RestServer::handleLogin(const http::request<http::string_body>& req) {
         else {
             // Check the password (you can use a library like bcrypt for this)
             std::string storedHash = dbManager.getPasswordHash(email);
-            if (checkPassword(password, storedHash)) {
+            if (Utils::checkPassword(password, storedHash)) {
                 // Generate a token
-                std::string token = generateToken(email);
+                std::string token = Utils::generateToken(email);
 
                 // Update user status to 'online'
                 dbManager.updateUserStatus(email, "online");
@@ -244,16 +224,6 @@ json RestServer::handleLogin(const http::request<http::string_body>& req) {
     return response;
 }
 
-std::string RestServer::generateToken(const std::string& email) {
-    auto token = jwt::create()
-        .set_issuer("auth0")
-        .set_type("JWS")
-        .set_payload_claim("email", jwt::claim(email))
-        .set_expires_at(std::chrono::system_clock::now() + std::chrono::hours{ 24 })
-        .sign(jwt::algorithm::hs256{ "secret" });
-    return token;
-}
-
 json RestServer::handleRegister(const http::request<http::string_body>& req) {
     json response;
     try {
@@ -265,7 +235,7 @@ json RestServer::handleRegister(const http::request<http::string_body>& req) {
         std::string password = requestBody.at("password").get<std::string>();
 
         // Hash the password (you can use a library like bcrypt for this)
-        std::string passwordHash = hashPassword(password.c_str());
+        std::string passwordHash = Utils::hashPassword(password.c_str());
 
         // Get the singleton instance of DatabaseManager
         DatabaseManager& dbManager = DatabaseManager::getInstance();
@@ -278,10 +248,10 @@ json RestServer::handleRegister(const http::request<http::string_body>& req) {
         else {
             // Register the new user
             if (dbManager.registerUser(email, passwordHash)) {
-                std::string token = generateToken(email);
+                std::string token = Utils::generateToken(email);
 
                 // Update user status to 'online'
-				dbManager.updateUserStatus(email, "online");
+                dbManager.updateUserStatus(email, "online");
                 response["message"] = "Registration successful";
                 response["status"] = "success";
                 response["token"] = token;
@@ -322,7 +292,7 @@ json RestServer::handleLogout(const http::request<http::string_body>& req) {
             auto decoded = jwt::decode(token);
             std::string email = decoded.get_payload_claim("email").as_string();
             // Update user status to 'offline'
-            dbManager.updateUserStatus(email, "offline")
+            dbManager.updateUserStatus(email, "offline");
             response["message"] = "Logout successful";
             response["status"] = "success";
         }
@@ -341,22 +311,33 @@ json RestServer::handleLogout(const http::request<http::string_body>& req) {
 json RestServer::handleGetUsers(const http::request<http::string_body>& req) {
     json response;
     try {
+        // Extract the token from the request headers
+        auto authHeader = req[http::field::authorization];
+        if (authHeader.empty()) {
+            response["message"] = "Authorization header missing";
+            response["status"] = "error";
+            return response;
+        }
+
+        std::string token = authHeader.substr(7); // Remove "Bearer " prefix
+        std::string email;
+        if (!isTokenValid(token, email)) {
+            response["message"] = "Invalid token";
+            response["status"] = "error";
+            return response;
+        }
+
         // Get the singleton instance of DatabaseManager
         DatabaseManager& dbManager = DatabaseManager::getInstance();
 
         // Retrieve list of users
-        std::vector<std::vector<std::string>> users = dbManager.getUsers();
-        response["users"] = json::array();
-        for (const auto& user : users) {
-            json userJson;
-            userJson["username"] = user[0];
-            userJson["email"] = user[1];
-            userJson["profile_picture"] = user[2];
-            userJson["status"] = user[3];
-            userJson["created_at"] = user[4];
-            response["users"].push_back(userJson);
-        }
-        response["status"] = "success";
+        std::vector<std::string> user = dbManager.getUserByEmail(email);
+        response["username"] = user[0];
+        response["email"] = user[1];
+        response["profile_picture"] = user[2];
+        response["status"] = user[3];
+        response["created_at"] = user[4];
+
     }
     catch (const std::exception& e) {
         response["message"] = "Failed to retrieve users";
@@ -370,15 +351,332 @@ json RestServer::handleGetRooms(const http::request<http::string_body>& req) {
     // Retrieve list of chat rooms
     // Return JSON response
     json response;
-    response["rooms"] = json::array();
+    try {
+        // Extract the token from the request headers
+        auto authHeader = req[http::field::authorization];
+        if (authHeader.empty()) {
+            response["message"] = "Authorization header missing";
+            response["status"] = "error";
+            return response;
+        }
+
+        std::string token = authHeader.substr(7); // Remove "Bearer " prefix
+        std::string email;
+        if (!isTokenValid(token, email)) {
+            response["message"] = "Invalid token";
+            response["status"] = "error";
+            return response;
+        }
+
+        // Get the singleton instance of DatabaseManager
+        DatabaseManager& dbManager = DatabaseManager::getInstance();
+
+        std::string userId = json::parse(req.body())["user_id"];
+
+        // Retrieve list of chat rooms
+        std::vector<std::vector<std::string>> rooms = dbManager.getRoomsByUserId(std::stoi(userId));
+        response["rooms"] = json::array();
+        for (const auto& room : rooms) {
+            json roomJson;
+            roomJson["room_id"] = room[0];
+            roomJson["room_name"] = room[1];
+            roomJson["created_at"] = room[2];
+            response["rooms"].push_back(roomJson);
+        }
+        response["status"] = "success";
+    }
+    catch (const std::exception& e) {
+        response["message"] = "Failed to retrieve rooms";
+        response["status"] = "error";
+    }
+
     return response;
 }
 
 json RestServer::handleGetMessages(const http::request<http::string_body>& req, const std::string& roomId) {
-    // Retrieve message history for the specified room
-    // Return JSON response
+  // Retrieve message history for the specified room
+  // Return JSON response
+  json response;
+    try {
+        // Extract the token from the request headers
+        auto authHeader = req[http::field::authorization];
+        if (authHeader.empty()) {
+            response["message"] = "Authorization header missing";
+            response["status"] = "error";
+            return response;
+        }
+
+        std::string token = authHeader.substr(7); // Remove "Bearer " prefix
+        std::string email;
+        if (!isTokenValid(token, email)) {
+            response["message"] = "Invalid token";
+            response["status"] = "error";
+            return response;
+        }
+
+
+		// Get the singleton instance of DatabaseManager
+		DatabaseManager& dbManager = DatabaseManager::getInstance();
+
+        std::vector<std::vector<std::string>> messages = dbManager.getMessages(std::stoi(roomId));
+
+		for (const auto& message : messages) {
+			json messageJson;
+			messageJson["message_id"] = message[0];
+			messageJson["sender_id"] = message[1];
+			messageJson["content"] = message[2];
+			messageJson["is_read"] = message[3];
+			messageJson["created_at"] = message[4];
+			response["messages"].push_back(messageJson);
+		}
+
+		std::vector<std::string> room = dbManager.getRoomById(std::stoi(roomId));
+		json roomJson;
+		roomJson["room_id"] = room[0];
+		roomJson["user_id_1"] = room[1];
+        roomJson["user_id_2"] = room[2];
+		roomJson["last_message_at"] = room[3];
+        roomJson["created_at"] = room[4];
+
+        // Retrieve message history for the specified room
+        response["messages"] = json::array();
+		response["room"] = roomJson;
+        response["status"] = "success";
+    }
+    catch (const std::exception& e) {
+        response["message"] = "Failed to retrieve messages";
+        response["status"] = "error";
+    }
+
+    return response;
+}
+
+json RestServer::handleInviteFriend(const http::request<http::string_body>& req) {
     json response;
-    response["messages"] = json::array();
+    try {
+        // Extract the token from the request headers
+        auto authHeader = req[http::field::authorization];
+        if (authHeader.empty()) {
+            response["message"] = "Authorization header missing";
+            response["status"] = "error";
+            return response;
+        }
+
+        std::string token = authHeader.substr(7); // Remove "Bearer " prefix
+        std::string email;
+        if (!isTokenValid(token, email)) {
+            response["message"] = "Invalid token";
+            response["status"] = "error";
+            return response;
+        }
+
+		std::string friendId = json::parse(req.body())["friend_id"];
+		std::string userId = json::parse(req.body())["user_id"];
+
+		// Get the singleton instance of DatabaseManager
+		DatabaseManager& dbManager = DatabaseManager::getInstance();
+
+		std::vector<std::string> result = dbManager.updateFriendRequest(std::stoi(userId), std::stoi(friendId));
+
+		for (const auto& row : result) {
+			json friendRequest;
+			friendRequest["user_id_1"] = row[0];
+			friendRequest["user_id_2"] = row[1];
+			friendRequest["is_accepted"] = row[2];
+			response["friend_requests"].push_back(friendRequest);
+		}
+
+
+
+        // Invite a friend to join a chat room
+        response["message"] = "Invite sent";
+        response["status"] = "success";
+    }
+    catch (const std::exception& e) {
+        response["message"] = "Failed to send invite";
+        response["status"] = "error";
+    }
+
+    return response;
+}
+
+
+json RestServer::handleGetFriend(const http::request<http::string_body>& req) {
+	json response;
+
+    try {
+
+        // Extract the token from the request headers
+        auto authHeader = req[http::field::authorization];
+        if (authHeader.empty()) {
+            response["message"] = "Authorization header missing";
+            response["status"] = "error";
+            return response;
+        }
+
+        std::string token = authHeader.substr(7); // Remove "Bearer " prefix
+        std::string email;
+        if (!isTokenValid(token, email)) {
+            response["message"] = "Invalid token";
+            response["status"] = "error";
+            return response;
+        }
+
+		// Get the singleton instance of DatabaseManager
+		DatabaseManager& dbManager = DatabaseManager::getInstance();
+
+		std::string userId = json::parse(req.body())["user_id"];
+
+        std::vector<std::vector<std::string>> result = dbManager.getFriends(std::stoi(userId));
+
+		for (const auto& row : result) {
+			json friend_;
+            friend_["user_name"] = row[0];
+            friend_["email"] = row[1];
+            friend_["profile_picture"] = row[2];
+            friend_["status"] = row[3];
+            friend_["created_at"] = row[4];
+			response["friends"].push_back(friend_);
+		}
+		response["status"] = "success";
+
+	}
+    catch (const std::exception& e) {
+        response["message"] = "Failed to retrieve friend";
+        response["status"] = "error";
+    }
+
+	return response;
+
+};
+
+
+json RestServer::handleGetPendingInvitedFriend(const http::request<http::string_body>& req) {
+
+	json response;
+	try {
+		// Extract the token from the request headers
+		auto authHeader = req[http::field::authorization];
+		if (authHeader.empty()) {
+			response["message"] = "Authorization header missing";
+			response["status"] = "error";
+			return response;
+		}
+		std::string token = authHeader.substr(7); // Remove "Bearer " prefix
+		std::string email;
+		if (!isTokenValid(token, email)) {
+			response["message"] = "Invalid token";
+			response["status"] = "error";
+			return response;
+		}
+		// Get the singleton instance of DatabaseManager
+		DatabaseManager& dbManager = DatabaseManager::getInstance();
+		std::string userId = json::parse(req.body())["user_id"];
+		std::vector<std::vector<std::string>> result = dbManager.getFriendRequestPending(std::stoi(userId));
+		for (const auto& row : result) {
+			json friend_;
+			friend_["user_name"] = row[0];
+			friend_["email"] = row[1];
+			friend_["profile_picture"] = row[2];
+			friend_["status"] = row[3];
+			friend_["created_at"] = row[4];
+			response["friends"].push_back(friend_);
+		}
+		response["status"] = "success";
+	}
+	catch (const std::exception& e) {
+		response["message"] = "Failed to retrieve friend";
+		response["status"] = "error";
+	}
+	return response;
+
+
+};
+
+json RestServer::handleGetFriendIniviteRequest(const http::request<http::string_body>& req) {
+	json response;
+	try {
+		// Extract the token from the request headers
+		auto authHeader = req[http::field::authorization];
+		if (authHeader.empty()) {
+			response["message"] = "Authorization header missing";
+			response["status"] = "error";
+			return response;
+		}
+		std::string token = authHeader.substr(7); // Remove "Bearer " prefix
+		std::string email;
+		if (!isTokenValid(token, email)) {
+			response["message"] = "Invalid token";
+			response["status"] = "error";
+			return response;
+		}
+		// Get the singleton instance of DatabaseManager
+		DatabaseManager& dbManager = DatabaseManager::getInstance();
+		std::string userId = json::parse(req.body())["user_id"];
+		std::vector<std::vector<std::string>> result = dbManager.getFriendRequests(std::stoi(userId));
+		for (const auto& row : result) {
+			json friend_;
+			friend_["user_name"] = row[0];
+			friend_["email"] = row[1];
+			friend_["profile_picture"] = row[2];
+			friend_["status"] = row[3];
+			friend_["created_at"] = row[4];
+			response["friends"].push_back(friend_);
+		}
+		response["status"] = "success";
+	}
+	catch (const std::exception& e) {
+		response["message"] = "Failed to retrieve friend";
+		response["status"] = "error";
+	}
+	return response;
+};
+
+
+bool RestServer::handleAcceptInviteFriend(const http::request<http::string_body>& req) {
+	json response;
+	try {
+		// Extract the token from the request headers
+		auto authHeader = req[http::field::authorization];
+		if (authHeader.empty()) {
+			response["message"] = "Authorization header missing";
+			response["status"] = "error";
+			return response;
+		}
+		std::string token = authHeader.substr(7); // Remove "Bearer " prefix
+		std::string email;
+		if (!isTokenValid(token, email)) {
+			response["message"] = "Invalid token";
+			response["status"] = "error";
+			return response;
+		}
+        std::string friendId = json::parse(req.body())["friend_id"];
+        std::string userId = json::parse(req.body())["user_id"];
+
+        // Get the singleton instance of DatabaseManager
+        DatabaseManager& dbManager = DatabaseManager::getInstance();
+
+        std::vector<std::string> result = dbManager.updateFriendRequest(std::stoi(userId), std::stoi(friendId));
+
+        for (const auto& row : result) {
+            json friendRequest;
+            friendRequest["user_id_1"] = row[0];
+            friendRequest["user_id_2"] = row[1];
+            friendRequest["is_accepted"] = row[2];
+            response["friend_requests"].push_back(friendRequest);
+        }
+
+
+
+        // Invite a friend to join a chat room
+        response["message"] = "Invite sent";
+        response["status"] = "success";
+    }
+    catch (const std::exception& e) {
+        response["message"] = "Failed to send invite";
+        response["status"] = "error";
+    }
+
     return response;
 }
 
